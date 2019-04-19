@@ -30,7 +30,7 @@ function sensors = DAQ_DATA_PARSER(X)
 % GPS_lon_deg       -> GPS longitude, same caveats as GPS_lat_deg
 % GPS_h_msl_m       -> GPS height in meters MSL, same caveats as GPS_lat_deg
 % GPS_v_mps         -> GPS ground speed in m/s, same caveats as GPS_lat_deg
-% GPS_head_deg      -> GPS heading REFERENCED FROM 0-360 deg (360=North), be careful! Same caveats as GPS_lat_deg
+% GPS_head_deg      -> GPS heading REFERENCED FROM -180<->180 deg (0=North), be careful! Same caveats as GPS_lat_deg
 % GPS_satellites    -> GPS satellites visible, normally ~10-15, less in enclosed spaces. Minimum 4 for 3-D fix.
 % GPS_fix_type      -> 1-time only, 2-2D, 3-3D, 4-3D+SBAS/WAAS
 % GPS_north_m       -> Calculated true North displacement from turn-on position in m, same caveats as GPS_lat_deg
@@ -75,21 +75,24 @@ clkfreq = 96000000; %Main system clock runs on 96 Mhz clock, more accurate time 
 I = X(X(:,1)==10,:);
 G = X(X(:,1)==11,:);
 
-%Calculate time step and phase align data to inertial estimates
-T_I = TIME_STEP(I,clkfreq);
-T_G = TIME_STEP(G,clkfreq)+ (G(1,2)-I(1,2))/clkfreq;
+% [b, a] = unique(I(:,2));
+% I = I(a,:);
 
- % added by Ryan Powell 3/27
-[~, indices] = unique(T_G); % get unique indices from T_G
-indices_check = ones(1,length(indices)-1); % initialize check array
-for i=1:length(indices)-1 % for size 1 less than number of unique indices
-    if(indices(i)+1 ~= indices(i+1)) % if an index value is skipped
-        indices_check(i) = 0; % then non unique element was recognized
-    end
-end
-bad_indices = find(indices_check == 0) + 1; % get indices in T_G
-T_G(bad_indices) = []; % remove duplicate indices in T_G
-G(bad_indices,:) = []; % remove corresponding indices in G
+%Calculate time step and phase align data to inertial estimates
+[I,T_I] = TIME_STEP(I,clkfreq);
+[G,T_G] = TIME_STEP(G,clkfreq);%+ (G(1,2)-I(1,2))/clkfreq;
+
+%  % added by Ryan Powell 3/27
+% [~, indices] = unique(T_G); % get unique indices from T_G
+% indices_check = ones(1,length(indices)-1); % initialize check array
+% for i=1:length(indices)-1 % for size 1 less than number of unique indices
+%     if(indices(i)+1 ~= indices(i+1)) % if an index value is skipped
+%         indices_check(i) = 0; % then non unique element was recognized
+%     end
+% end
+% bad_indices = find(indices_check == 0) + 1; % get indices in T_G
+% T_G(bad_indices) = []; % remove duplicate indices in T_G
+% G(bad_indices,:) = []; % remove corresponding indices in G
 
 %First data point can be erroneous
 I = I(2:end,:);
@@ -98,6 +101,7 @@ G = G(2:end,:);
 time = [0:dt_data:T_I(end)];
 
 %% Scaling
+sensors = [];
 
 I = interp1(T_I,I,time,'linear','extrap');
 G1 = interp1(T_G,G(:,1:10),time,'linear','extrap');
@@ -106,12 +110,13 @@ G3 = interp1(T_G,G(:,14:18),time,'linear','extrap');
 G4 = interp1(T_G,G(:,19:end),time,'nearest','extrap');
 G = [G1 G2 G3 G4];
 
-sensors = [];
-
 % Time vector
 sensors.time_s = time';             %Master time vector, in seconds
 sensors.diff_TI = 1./diff(T_I);
 sensors.diff_TG = 1./diff(T_G);
+sensors.ms = mod(cumsum(1./sensors.diff_TG),1);
+sensors.GPS_second = seconds+[0; sensors.ms];
+sensors.GPS_second = interp1(T_G,sensors.GPS_second,time,'linear','extrap')';
 
 % GPS data 
 kGPS = interp1(time,1:length(time),time(1):dt_GPS:time(end),'nearest');
@@ -123,9 +128,11 @@ sensors.GPS_lat_deg     = G(:,8)/1e7;
 sensors.GPS_lon_deg     = G(:,9)/1e7;
 sensors.GPS_h_msl_m     = -G(:,10)/1000;  
 sensors.GPS_v_mps       = (sum((G(:,15:17)/1000).^2,2)).^0.5;
-sensors.GPS_head_deg    = abs(bitshift(int32(G(:,12)),-16))/100;
-sensors.GPS_head_deg    = mod(sensors.GPS_head_deg+180,360)-180;
-sensors.GPS_head_deg(sensors.GPS_head_deg<-180) = sensors.GPS_head_deg(sensors.GPS_head_deg<-180)+360;
+
+sensors.GPS_head_acc_deg= G(:,19)/1e5;
+sensors.GPS_head_deg    = atan2(G(:,16),G(:,15))*180/pi;
+sensors.GPS_head_deg(sensors.GPS_head_acc_deg>5) = 0;
+
 sensors.GPS_satellites  = bitshift(int32(G(:,13)),-8);
 sensors.GPS_fix_type    = bitand(int32(G(:,13)),7);
 
@@ -138,19 +145,18 @@ sensors.GPS_v_ned_mps   = G(:,15:17)/1000;
 sensors.GPS_xy_acc_m    = double(bitand(int32(G(:,11)),65535))/1000;
 sensors.GPS_z_acc_m     = double(bitshift(int32(G(:,11)),-16))/1000;
 sensors.GPS_v_acc_mps   = G(:,18)/1000;
-sensors.GPS_head_acc_deg= G(:,19)/1e5;
 
 sensors.GPS_iTow        = G(:,14);
 sensors.GPS_year        = bitand((G(:,20)),65535);
 sensors.GPS_month       = bitand(bitshift((G(:,20)),-16),255);
 sensors.GPS_day         = bitand(bitshift((G(:,20)),-24),255);
-
 sensors.GPS_hour        = bitand(bitshift((G(:,21)),-0),255);
 sensors.GPS_minute      = bitand(bitshift((G(:,21)),-8),255);
 sensors.GPS_second      = bitand(bitshift((G(:,21)),-16),255);
 sensors.GPS_ms          = mod(G(:,3),1000);
-sensors.GPS_time_UTC    = datetime(sensors.GPS_year,sensors.GPS_month,sensors.GPS_day,sensors.GPS_hour,sensors.GPS_minute,sensors.GPS_second,sensors.GPS_ms);
-    
+a = datetime(sensors.GPS_year(1),sensors.GPS_month(1),sensors.GPS_day(1),sensors.GPS_hour(1),sensors.GPS_minute(1),sensors.GPS_second(1));
+sensors.GPS_time_UTC = a+seconds(time);
+
 % Make values NAN if valid not true
 sensors.GPS_lat_deg_interp      = sensors.GPS_lat_deg;
 sensors.GPS_lon_deg_interp      = sensors.GPS_lon_deg;
@@ -185,4 +191,24 @@ sensors.pos_INS_m       = I(:,24:26)/1e3;
 
 [index, ~] = find(diff(I(:,27))>0.5);
 sensors.event_index    = index+1;
+
+sensors.errors = I(:,28);
+ERROR = max(sensors.errors);
+if ERROR ~= 0
+    if ERROR == 1
+        display('Warning, IMU failed to initialize, try power cycling');
+    elseif ERROR == 2
+        display('Warning, pressure sensor not detected, try power cycling. If error persists, pressure sensor has failed and requires service');
+    elseif ERROR == 4
+        display('Warning, GPS has failed to communicate, try power cycling. If error persists, pressure sensor has failed and requires service');
+    end
+end
+
+WARNING = I(:,29);
+sensors.warning = strings(size(I(:,29)));
+sensors.warning(WARNING == 1) = "Accelerometer saturated";
+sensors.warning(WARNING == 2) = "Gyroscope saturated";
+sensors.warning(WARNING == 4) = "Magnetometer saturated";
+sensors.warning(WARNING == 8) = "Invalid time signature";
+sensors.warning(WARNING == 16) = "INS incorrect alignment, power cycle and ensure device is stationary";
 
