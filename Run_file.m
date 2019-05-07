@@ -1,7 +1,8 @@
 %% DAQ Read example
 evalin('base','clc,clear all, close all')
        
-file1 = 'H:\R_042txt'; %Set absolute path i.e. drive:\folder\R_***.txt, or you can use local paths if you know what you're doing!
+file1 = 'H:\R_003.txt'; %Set absolute path i.e. drive:\folder\R_***.txt, or you can use local paths if you know what you're doing!
+
 X = SD_READER(file1,32);
 sensors = DAQ_DATA_PARSER(X);
 
